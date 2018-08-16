@@ -1,0 +1,459 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Github Continuous Integration stack with two build and deploy targets
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: michaelscheung
+    Description: Owner of github repo
+  GitHubRepo:
+    Type: String
+    Default: eshade
+    Description: GitHub repository name
+  GitHubBranch:
+    Type: String
+    Default: release
+    Description: GitHub repository branch
+  GitHubToken:
+    Type: String #Secure stirng?
+    Description: GitHub repository OAuth token
+Resources:
+  CDBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: BucketOwnerFullControl
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+            ExpirationInDays: 90
+            Id: CleanupBuilds
+            Status: Enabled
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt [PipelineRole, Arn]
+      ArtifactStore:
+        Type: S3
+        # Location has a maxlength of 63, which is stupid low
+        Location: !Ref CDBucket
+      Stages:
+      - Name: Source
+        Actions:
+        - Name: Github
+          ActionTypeId:
+            Category: Source
+            Owner: ThirdParty
+            Version: 1
+            Provider: GitHub
+          Configuration:
+            Owner: !Ref GitHubOwner
+            Repo: !Ref GitHubRepo
+            Branch: !Ref GitHubBranch
+            OAuthToken: !Ref GitHubToken
+          OutputArtifacts: [Name: SourceArtifact]
+          RunOrder: 1
+      - Name: Build
+        Actions:
+        - Name: Esbenshade-Relay-Maven
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Version: 1
+            Provider: CodeBuild
+          # https://docs.aws.amazon.com/codepipeline/latest/userguide/reference-pipeline-structure.html
+          Configuration:
+            ProjectName: !Ref CodeBuildEshadeRelayMaven
+          InputArtifacts: [Name: SourceArtifact]
+          OutputArtifacts: [Name: RelayBuildArtifact]
+        - Name: Esbenshade-Transaction-Maven
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Version: 1
+            Provider: CodeBuild
+          # https://docs.aws.amazon.com/codepipeline/latest/userguide/reference-pipeline-structure.html
+          Configuration:
+            ProjectName: !Ref CodeBuildEshadeTransactionMaven
+          InputArtifacts: [Name: SourceArtifact]
+          OutputArtifacts: [Name: TransactionBuildArtifact]
+          RunOrder: 1
+          RunOrder: 1
+      - Name: Deploy
+        Actions:
+        - Name: Deploy-Relay-Node
+          RunOrder: 1
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Version: 1
+            Provider: CodeDeploy
+          InputArtifacts: [Name: RelayBuildArtifact]
+          Configuration:
+            ApplicationName: !Ref CodeDeployEshadeRelayApp
+            DeploymentGroupName: !Ref CodeDeployEshadeRelayGroup
+        - Name: Deploy-Transaction-Node
+          RunOrder: 1
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Version: 1
+            Provider: CodeDeploy
+          InputArtifacts: [Name: TransactionBuildArtifact]
+          Configuration:
+            ApplicationName: !Ref CodeDeployEshadeTransactionApp
+            DeploymentGroupName: !Ref CodeDeployEshadeTransactionGroup
+  CodeBuildEshadeTransactionMaven:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildSvcPolicy
+    Properties:
+      Environment:
+        ComputeType: "BUILD_GENERAL1_SMALL"
+        # See https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-available.html
+        Image: "aws/codebuild/java:openjdk-8"
+        #Image: "eb-java-8-amazonlinux-64:2.4.3"
+        #Image: "maven:3.5.0-jdk-8"
+        Type: "LINUX_CONTAINER"
+      Name: prod-eshade-transaction-maven-build-project
+      Description: Esbenshade transaction project
+      ServiceRole: !Ref CodeBuildSvcRole
+      Artifacts:
+        # https://docs.aws.amazon.com/codebuild/latest/userguide/create-project.html#create-project-cli
+        # Location: !Sub "${CDBucket}/codebuild/relay-app/build-artifacts"
+        # Name: "relayartifact"
+        Type: "CODEPIPELINE"
+      Cache:
+        Location: !Sub "${CDBucket}/codebuild/transaction-app/build-cache"
+        Type: S3
+      Source:
+        Type: "CODEPIPELINE"
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo "Copying configuration scripts and data to root..."
+                - cp -R ./configuration/scripts ./scripts
+                - cp -R ./configuration/data ./data
+            pre_build:
+              commands:
+                - echo "Copying stuff from transaction config into working directory"
+                - cp -R ./configuration/resources/transaction-config/* ./
+            build:
+              commands:
+                - echo Build started on `date`
+                - mvn install
+            post_build:
+              commands:
+                - echo Build completed on `date`
+          artifacts:
+            files:
+              - target/esbenshade-1.0-SNAPSHOT-jar-with-dependencies.jar
+              - appspec.yml
+              - data/**/*
+              - scripts/**/*
+              - reference-files/**/*
+              # - transaction-config/**/*
+          cache:
+            paths:
+              - '/root/.m2/**/*'
+      TimeoutInMinutes: 5
+  CodeBuildEshadeRelayMaven:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildSvcPolicy
+    Properties:
+      Environment:
+        ComputeType: "BUILD_GENERAL1_SMALL"
+        # See https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-available.html
+        Image: "aws/codebuild/java:openjdk-8"
+        Type: "LINUX_CONTAINER"
+      Name: prod-eshade-relay-maven-build-project
+      Description: Relay build.  Builds project with normal settings and copies relay build specific stuff too
+      ServiceRole: !Ref CodeBuildSvcRole
+      Artifacts:
+        Type: "CODEPIPELINE"
+      Cache:
+        Location: !Sub "${CDBucket}/codebuild/relay-app/build-cache"
+        Type: S3
+      Source:
+        Type: "CODEPIPELINE"
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo "Copying deployment scripts and data to root"
+                - cp -R ./configuration/scripts ./scripts
+                - cp -R ./configuration/data ./data
+            pre_build:
+              commands:
+                - echo "Copying stuff from relay-config to working dir"
+                - cp -R ./configuration/resources/relay-config/* ./
+            build:
+              commands:
+                - echo Build started on `date`
+                - mvn install
+            post_build:
+              commands:
+                - echo Build completed on `date`
+          artifacts:
+            files:
+              - target/esbenshade-1.0-SNAPSHOT-jar-with-dependencies.jar
+              - appspec.yml
+              - data/**/*
+              - scripts/**/*
+              - reference-files/**/*
+              # - relay-config/**/*
+          cache:
+            paths:
+              - '/root/.m2/**/*'
+      TimeoutInMinutes: 5
+  CodeDeployEshadeRelayApp:
+    Type: "AWS::CodeDeploy::Application"
+    Properties:
+      ApplicationName: esbenshade-relay-prod
+  CodeDeployEshadeTransactionApp:
+    Type: "AWS::CodeDeploy::Application"
+    Properties:
+      ApplicationName: esbenshade-transaction-prod
+  CodeDeployEshadeRelayGroup:
+    Type: "AWS::CodeDeploy::DeploymentGroup"
+    Properties:
+      ApplicationName: !Ref CodeDeployEshadeRelayApp
+      # AlarmConfiguration:
+      #   AlarmConfiguration
+      DeploymentConfigName: "CodeDeployDefault.AllAtOnce"
+      DeploymentStyle:
+        DeploymentOption: WITHOUT_TRAFFIC_CONTROL
+        DeploymentType: "IN_PLACE"
+      Ec2TagFilters:
+        - Key: polling-node
+          Type: "KEY_ONLY"
+      ServiceRoleArn: !GetAtt [CodeDeploySvcRole, "Arn"]
+  CodeDeployEshadeTransactionGroup:
+    Type: "AWS::CodeDeploy::DeploymentGroup"
+    Properties:
+      ApplicationName: !Ref CodeDeployEshadeTransactionApp
+      # AlarmConfiguration:
+      #   AlarmConfiguration
+      DeploymentConfigName: "CodeDeployDefault.AllAtOnce"
+      DeploymentStyle:
+        DeploymentOption: WITHOUT_TRAFFIC_CONTROL
+        DeploymentType: "IN_PLACE"
+      Ec2TagFilters:
+        - Key: transaction-node
+          Type: "KEY_ONLY"
+      ServiceRoleArn: !GetAtt [CodeDeploySvcRole, "Arn"]
+  CFNRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: Allow
+            Principal: {Service: [cloudformation.amazonaws.com]}
+        Version: '2012-10-17'
+      Path: /
+      ManagedPolicyArns:
+      # TODO grant least privilege to only allow managing your CloudFormation stack resources
+        - "arn:aws:iam::aws:policy/AdministratorAccess"
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: Allow
+            Principal: {Service: [codepipeline.amazonaws.com]}
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      #  - arn:aws:iam::aws:policy/service-role/AWSCodePipelineRole
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - 's3:*'
+                - 'cloudformation:*'
+                - 'iam:PassRole'
+                - 'lambda:*'
+                - 'codebuild:*'
+                Effect: Allow
+                Resource: '*'
+        - PolicyName: "CodeBuildAccess"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Sid: CloudWatchLogsPolicy
+              Effect: Allow
+              Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              Resource:
+              - "*"
+            - Sid: S3GetObjectPolicy
+              Effect: Allow
+              Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              Resource:
+              - "*"
+            - Sid: S3PutObjectPolicy
+              Effect: Allow
+              Action:
+              - s3:PutObject
+              Resource:
+              - "*"
+        - PolicyName: "CodePipelineDefault"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              Resource: "*"
+              Effect: Allow
+            - Action:
+              - s3:PutObject
+              Resource:
+              - arn:aws:s3:::codepipeline*
+              - arn:aws:s3:::elasticbeanstalk*
+              Effect: Allow
+            - Action:
+              - codedeploy:CreateDeployment
+              - codedeploy:GetApplicationRevision
+              - codedeploy:GetDeployment
+              - codedeploy:GetDeploymentConfig
+              - codedeploy:RegisterApplicationRevision
+              Resource: "*"
+              Effect: Allow
+            - Action:
+              - elasticbeanstalk:CreateApplicationVersion
+              - elasticbeanstalk:DescribeApplicationVersions
+              - elasticbeanstalk:DescribeEnvironments
+              - elasticbeanstalk:DescribeEvents
+              - elasticbeanstalk:UpdateEnvironment
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeLaunchConfigurations
+              - autoscaling:DescribeScalingActivities
+              - autoscaling:ResumeProcesses
+              - autoscaling:SuspendProcesses
+              - cloudformation:GetTemplate
+              - cloudformation:DescribeStackResource
+              - cloudformation:DescribeStackResources
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateStack
+              - ec2:DescribeInstances
+              - ec2:DescribeImages
+              - ec2:DescribeAddresses
+              - ec2:DescribeSubnets
+              - ec2:DescribeVpcs
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeKeyPairs
+              - elasticloadbalancing:DescribeLoadBalancers
+              - rds:DescribeDBInstances
+              - rds:DescribeOrderableDBInstanceOptions
+              - sns:ListSubscriptionsByTopic
+              Resource: "*"
+              Effect: Allow
+            - Action:
+              - lambda:invokefunction
+              - lambda:listfunctions
+              Resource: "*"
+              Effect: Allow
+            - Action:
+              - s3:ListBucket
+              - s3:GetBucketPolicy
+              - s3:GetObjectAcl
+              - s3:PutObjectAcl
+              - s3:DeleteObject
+              Resource: arn:aws:s3:::elasticbeanstalk*
+              Effect: Allow
+
+  CodeBuildSvcRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      #Path: "/cfn/ci/codebuild/"
+  CodeDeploySvcRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codedeploy.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      Path: "/"
+      #Path: "/cfn/ci/codedeploy/"
+  CodeBuildSvcPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      Roles:
+        - !Ref CodeBuildSvcRole
+      PolicyName: "root"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: CloudWatchLogsPolicy
+          Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Resource:
+          - "*"
+        - Sid: S3GetObjectPolicy
+          Effect: Allow
+          Action:
+          - s3:GetObject
+          - s3:GetObjectVersion
+          Resource:
+          - "*"
+        - Sid: S3PutObjectPolicy
+          Effect: Allow
+          Action:
+          - s3:PutObject
+          Resource:
+          - "*"
+  CodeBuildInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      #Path: "/cfn/ci/codebuild/"
+      Roles:
+        -
+          Ref: "CodeBuildSvcRole"
+  CodeDeployInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      #Path: "/cfn/ci/codedeploy/"
+      Roles:
+        -
+          Ref: "CodeDeploySvcRole"

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration status="WARN">
+    <Properties>
+     <Property name="baseLogPath">${env:LOG_PATH:-/default_log_folder/}</Property>
+    </Properties>
+  <appenders>
+    <Console name="Console" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{yyyy-MMM-dd HH:mm:ss.SSS} %-5level [%t] %logger{36} - %msg%n"/>
+    </Console>
+
+	<RollingFile name="RollingFile" fileName="${baseLogPath}/buffer.log" filePattern="${baseLogPath}/rolling-logs/%d{yyyy-MM-dd_HH-mm}.log">
+	  <PatternLayout>
+		<Pattern>%d{yyyy-MMM-dd HH:mm:ss.SSS} %-5level [%t] %logger{36} - %msg%n</Pattern>
+	  </PatternLayout>
+	  <Policies>
+		<TimeBasedTriggeringPolicy interval="10" modulate="true" />
+	  </Policies>
+	</RollingFile>
+
+	<RollingFile name="RollingFileWarn" fileName="${baseLogPath}/buffer-warn.log" filePattern="${baseLogPath}/rolling-logs/%d{yyyy-MM-dd_HH}-warn.log">
+	  <PatternLayout>
+		<Pattern>%d{yyyy-MMM-dd HH:mm:ss.SSS} %-5level [%t] %logger{36} - %msg%n</Pattern>
+	  </PatternLayout>
+	  <Policies>
+		<TimeBasedTriggeringPolicy interval="1" modulate="true" />
+	  </Policies>
+	</RollingFile>
+  </appenders>
+
+  <loggers>     
+    <root level="debug">
+      <appender-ref ref="Console" level="debug"/>
+      <appender-ref ref="RollingFile" level="debug"/>
+      <appender-ref ref="RollingFileWarn" level="warn"/>
+    </root>    
+  </loggers>
+</configuration>

@@ -1,0 +1,77 @@
+enableTrading: true
+enablePaging: false
+
+authenticateExchanges: true
+backgroundRetryExchanges: false
+
+maxOrderStaleness: PT5S
+maxArbLength: 3
+noArbsFoundSleep: PT0.3S
+
+failedOrderFromExchangeToleranceInterval: PT1H
+balanceVsFillsProfitEpsilonTolerance: 100e-8
+
+exchangeInstantiationRetryInterval: PT5M
+exchangeBalanceRefreshInterval: PT1M
+exchangeWithdrawalFeeRefreshInterval: PT30M
+exchangeMinimumTradeRestrictionRefreshInterval: PT30M
+
+orderTimestampEpsilon: PT20S
+initialOrderFillWaitTime: PT15S
+initialOpenOrderWaitTime: PT2S
+balanceChangeWaitTime: PT5S
+
+arbitrageTrackerWaitTime: PT10H
+arbitrageTrackerRefreshRate: PT1M
+
+lowBalnceInitialNotificationInterval: PT10M
+lowBalanceExponentialBackoff: 3
+lowBalanceMaxNotificationInterval: P1D
+lowBalanceNoActivityResetInterval: PT30M
+minRatioForNotify: 0.2
+
+whitelistedCurrencies:
+- Bitcoin
+- Ether
+- Binance Coin
+- United States Dollar
+- Monero
+- Basic Attention Token
+- Golem
+- ZRX
+- PTOY
+- ANT
+- EDG
+- CVC
+- Augur
+- Zcash
+- Ether Classic
+- GEO
+- Litecoin
+- Stellar
+minConversionRatioWithWithdrawalFees: 1.0005
+minConversionRatioWithoutWithdrawalFees: 0.9999
+
+maxOrderBookSize: 50
+orderBookPollingPort: 13377
+receiverThreadCount: 40
+exchangeReceiverBufferSize: 1024000
+clientReadTimeout: PT6S
+
+latencyMetricsSlidingTimeWindow: PT1M
+latencyMetricsReportInterval: PT1M
+legacyMetricsFrequency: 25
+
+pollerReportsPerFile: 1
+pollerWriteLogsInterval: PT1M
+rateLimitExceededBackoff: PT60S
+pollingExceptionBackoff: PT15S
+
+transactionLogsWriteSize: 256000
+
+krakenTier: 3
+
+logToS3: true
+logToConsole: true
+localOutputFolder: output
+debugLocalPriceUpdates: false

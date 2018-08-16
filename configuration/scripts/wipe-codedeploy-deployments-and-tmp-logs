@@ -1,0 +1,5 @@
+command='sudo rm -Rf /opt/codedeploy-agent/deployment-root/ && sudo rm -Rf /tmp/opt/'
+for host in $(cat ~/prog/eshade/data/servers.txt); do
+    echo "Running on host $host"
+    ssh -o StrictHostKeyChecking=no ec2-user@"$host" "$command" >"output.$host";
+  done

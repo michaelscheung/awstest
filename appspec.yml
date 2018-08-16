@@ -1,0 +1,23 @@
+# For more info, plz visit
+# https://docs.aws.amazon.com/codedeploy/latest/userguide/application-revisions-appspec-file.html
+version: 0.0
+os: linux
+files:
+    - source: /
+      destination: /tmp
+hooks:
+  BeforeInstall:
+    - location: scripts/echo_location.sh
+      timeout: 300
+      runas: root
+    - location: scripts/install_dependencies.sh
+      timeout: 300
+      runas: root
+  ApplicationStart:
+    - location: scripts/start_server.py
+      timeout: 100
+      runas: root
+  ApplicationStop:
+    - location: scripts/stop_server.sh
+      timeout: 400
+      runas: root

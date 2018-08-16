@@ -1,0 +1,534 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EC2 Instances and Networking for trading app'
+Parameters:
+  NumT2NanoPollingNodes:
+    Description: 'How many polling nodes to start up'
+    Type: Number
+    Default: 15
+  NumT2MicroPollingNodes:
+    Description: 'How many polling nodes to start up'
+    Type: Number
+    Default: 4
+  NumT2SmallPollingNodes:
+    Description: 'How many polling nodes to start up'
+    Type: Number
+    Default: 1
+Mappings:
+  RegionMap:
+    'ap-south-1':
+      AMI: 'ami-cacbbea5'
+    'eu-west-1':
+      AMI: 'ami-d41d58a7'
+    'ap-northeast-2':
+      AMI: 'ami-a04297ce'
+    'ap-northeast-1':
+      AMI: 'ami-1a15c77b'
+    'sa-east-1':
+      AMI: 'ami-b777e4db'
+    'ap-southeast-1':
+      AMI: 'ami-7243e611'
+    'ap-southeast-2':
+      AMI: 'ami-55d4e436'
+    'eu-central-1':
+      AMI: 'ami-0044b96f'
+    'us-east-1':
+      AMI: 'ami-c481fad3'
+    'us-east-2':
+      AMI: 'ami-71ca9114'
+    'us-west-1':
+      AMI: 'ami-de347abe'
+    'us-west-2':
+      AMI: 'ami-b04e92d0'
+Resources:
+  TradingVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: "default"
+  TradingSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      #AssignIpv6AddressOnCreation: true
+      AvailabilityZone: 'us-west-2c'
+      CidrBlock: 10.0.0.0/24
+      #Ipv6CidrBlock: String
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref TradingVpc
+  TradingSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Networking for relays and trasaction node'
+      VpcId: !Ref TradingVpc
+      SecurityGroupEgress:
+        - FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+          CidrIp: '0.0.0.0/0'
+        - FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+          CidrIp: '0.0.0.0/0'
+        - FromPort: 443
+          ToPort: 443
+          IpProtocol: tcp
+          CidrIp: '0.0.0.0/0'
+      SecurityGroupIngress:
+        - FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+          CidrIp: '0.0.0.0/0'
+        - FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+          CidrIp: '0.0.0.0/0'
+        - FromPort: 443
+          ToPort: 443
+          IpProtocol: tcp
+          CidrIp: '0.0.0.0/0'
+  InboundTradingSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref TradingSecurityGroup
+      GroupId: !Ref TradingSecurityGroup
+  OutboundTradingSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroupEgress'
+    Properties:
+      IpProtocol: -1
+      DestinationSecurityGroupId: !Ref TradingSecurityGroup
+      GroupId: !Ref TradingSecurityGroup
+  TradingVpcInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+  TradingGatewayAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref TradingVpcInternetGateway
+      VpcId: !Ref TradingVpc
+  TradingRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref TradingVpc
+  TradingIgwRouteTable:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref TradingVpcInternetGateway
+      RouteTableId: !Ref TradingRouteTable
+  TradingNatPublicIP:
+    Type: "AWS::EC2::EIP"
+    DependsOn: TradingVpc
+    Properties:
+      Domain: vpc
+  TradingNatGateway:
+    Type: "AWS::EC2::NatGateway"
+    DependsOn: TradingNatPublicIP
+    Properties:
+      AllocationId: !GetAtt TradingNatPublicIP.AllocationId
+      SubnetId: !Ref TradingSubnet
+
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: '/'
+      Roles:
+      - !Ref EC2InstanceIAMRole
+  EC2InstanceIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - 'ec2.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy'
+      - 'arn:aws:iam::aws:policy/AdministratorAccess'
+  T2NanoPollingNodeLaunchConfig:
+    DependsOn: TradingNatGateway
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      InstanceType: t2.nano
+      AssociatePublicIpAddress: true
+      SecurityGroups:
+      - !Ref TradingSecurityGroup
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash -xe
+            export NOWISH=$(date)
+            touch "test-got-here-nano-$NOWISH" && aws s3 cp -R ./test-got-here-nano-$NOWISH "s3://fbj-some-test-bucket/start/test-got-here-nano/$NOWISH"
+            echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKGKbJ6HuDz5iiY24qi1vCx8lMI9/xmeJrR9kqLCINip james@cantor" >> /home/ec2-user/authorized_keys
+            echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEA2a+C/zBVNiqaH6+BZ7K0bxsXdnLg6SDqZoXYRsr3aol6M2sHeug3Eqti0VC7U84VblcYIhKxe6neRP11SmD0X2uTUGAqzjSgnRc6YHy+iao8Va1iWWq58/RkROwjUAseOkaIj0M7J1Otu49WqAuvZ3fmiSu44TshbxBADcFo7eGjDiqe4WNYpDeuyAD9Ls2ZD23KeS1n5NNIR3t1B6Zof/IACi2waYPYDEuTOQHXRLnEbT5SDMKpQpRHdWbXa0dFBJZ0BjI07jeNNH95JmEmV8WB10RLa4yxVaYXPe8iqXYwakIokru/l1ixDtidWHXkc75SqKksoX4nMg9GlbAhDQ mike@home" >> /home/ec2-user/authorized_keys
+            yum update -y && yum install -y ruby wget && wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install && chmod +x ./install && ./install auto
+            service codedeploy-agent start
+            chkconfig --add codedeploy-agent
+            chkconfig codedeploy-agent on
+            yum install -y java-1.8.0-openjdk
+            yum install -y python36 python36-pip
+            yum-config-manager --enable epel
+            yum install -y tcpdump wireshark ec2-net-utils
+            yum -y erase ntp* && sleep 8s && yum -y install chrony &&  sleep 8s && service chronyd start
+            chkconfig --add chronyd
+            chkconfig chronyd on
+            yum install -y iftop htop
+            pip-3.6 install boto3
+            export NOWISH=$(date)
+            touch "test-got-here-nano-$NOWISH" && aws s3 cp -R ./test-got-here-nano-$NOWISH "s3://fbj-some-test-bucket/test-got-here-nano/$NOWISH"
+            /opt/aws/bin/cfn-signal -e $? --success --region ${AWS::Region} --stack ${AWS::StackName} --resource T2NanoPollingNodeAutoScalingGroup
+
+  T2MicroPollingNodeLaunchConfig:
+    DependsOn: TradingNatGateway
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      InstanceType: t2.micro
+      AssociatePublicIpAddress: true
+      SecurityGroups:
+      - !Ref TradingSecurityGroup
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash -xe
+            export NOWISH=$(date)
+            touch "test-got-here-micro-$NOWISH" && aws s3 cp -R ./test-got-here-micro-$NOWISH "s3://fbj-some-test-bucket/start/test-got-here-micro/$NOWISH"
+            echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKGKbJ6HuDz5iiY24qi1vCx8lMI9/xmeJrR9kqLCINip james@cantor" >> /home/ec2-user/authorized_keys
+            echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEA2a+C/zBVNiqaH6+BZ7K0bxsXdnLg6SDqZoXYRsr3aol6M2sHeug3Eqti0VC7U84VblcYIhKxe6neRP11SmD0X2uTUGAqzjSgnRc6YHy+iao8Va1iWWq58/RkROwjUAseOkaIj0M7J1Otu49WqAuvZ3fmiSu44TshbxBADcFo7eGjDiqe4WNYpDeuyAD9Ls2ZD23KeS1n5NNIR3t1B6Zof/IACi2waYPYDEuTOQHXRLnEbT5SDMKpQpRHdWbXa0dFBJZ0BjI07jeNNH95JmEmV8WB10RLa4yxVaYXPe8iqXYwakIokru/l1ixDtidWHXkc75SqKksoX4nMg9GlbAhDQ mike@home" >> /home/ec2-user/authorized_keys
+            yum update -y && yum install -y ruby wget && wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install && chmod +x ./install && ./install auto
+            service codedeploy-agent start
+            chkconfig --add codedeploy-agent
+            chkconfig codedeploy-agent on
+            yum install -y java-1.8.0-openjdk
+            yum install -y python36 python36-pip
+            yum-config-manager --enable epel
+            yum install -y tcpdump wireshark ec2-net-utils
+            yum -y erase ntp* && sleep 8s && yum -y install chrony &&  sleep 8s && service chronyd start
+            chkconfig --add chronyd
+            chkconfig chronyd on
+            yum install -y iftop htop
+            pip-3.6 install boto3
+            export NOWISH=$(date)
+            touch "test-got-here-micro-$NOWISH" && aws s3 cp -R ./test-got-here-micro-$NOWISH "s3://fbj-some-test-bucket/test-got-here-micro/$NOWISH"
+            /opt/aws/bin/cfn-signal -e $? --success --region ${AWS::Region} --stack ${AWS::StackName} --resource T2MicroPollingNodeAutoScalingGroup
+
+  T2SmallPollingNodeLaunchConfig:
+    DependsOn: TradingNatGateway
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      InstanceType: t2.small
+      AssociatePublicIpAddress: true
+      SecurityGroups:
+      - !Ref TradingSecurityGroup
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash -xe
+            export NOWISH=$(date)
+            touch "test-got-here-small-$NOWISH" && aws s3 cp -R ./test-got-here-small-$NOWISH "s3://fbj-some-test-bucket/start/test-got-here-small/$NOWISH"
+            echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKGKbJ6HuDz5iiY24qi1vCx8lMI9/xmeJrR9kqLCINip james@cantor" >> /home/ec2-user/authorized_keys
+            echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEA2a+C/zBVNiqaH6+BZ7K0bxsXdnLg6SDqZoXYRsr3aol6M2sHeug3Eqti0VC7U84VblcYIhKxe6neRP11SmD0X2uTUGAqzjSgnRc6YHy+iao8Va1iWWq58/RkROwjUAseOkaIj0M7J1Otu49WqAuvZ3fmiSu44TshbxBADcFo7eGjDiqe4WNYpDeuyAD9Ls2ZD23KeS1n5NNIR3t1B6Zof/IACi2waYPYDEuTOQHXRLnEbT5SDMKpQpRHdWbXa0dFBJZ0BjI07jeNNH95JmEmV8WB10RLa4yxVaYXPe8iqXYwakIokru/l1ixDtidWHXkc75SqKksoX4nMg9GlbAhDQ mike@home" >> /home/ec2-user/authorized_keys
+            yum update -y && yum install -y ruby wget && wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install && chmod +x ./install && ./install auto
+            service codedeploy-agent start
+            chkconfig --add codedeploy-agent
+            chkconfig codedeploy-agent on
+            yum install -y java-1.8.0-openjdk
+            yum install -y python36 python36-pip
+            yum-config-manager --enable epel
+            yum install -y tcpdump wireshark ec2-net-utils
+            yum -y erase ntp* && sleep 8s && yum -y install chrony &&  sleep 8s && service chronyd start
+            chkconfig --add chronyd
+            chkconfig chronyd on
+            yum install -y iftop htop
+            pip-3.6 install boto3
+            export NOWISH=$(date)
+            touch "test-got-here-small-$NOWISH" && aws s3 cp -R ./test-got-here-small-$NOWISH "s3://fbj-some-test-bucket/test-got-here-small/$NOWISH"
+            /opt/aws/bin/cfn-signal -e $? --success --region ${AWS::Region} --stack ${AWS::StackName} --resource T2SmallPollingNodeAutoScalingGroup
+
+  T2NanoPollingNodeAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - 'us-west-2c'
+      VPCZoneIdentifier:
+        - !Ref TradingSubnet
+      LaunchConfigurationName:
+        Ref: T2NanoPollingNodeLaunchConfig
+      DesiredCapacity: !Ref NumT2NanoPollingNodes
+      MinSize: !Ref NumT2NanoPollingNodes
+      MaxSize: !Ref NumT2NanoPollingNodes
+      Tags:
+      - Key: polling-node
+        Value: ""
+        PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref NumT2NanoPollingNodes
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingScheduledAction:
+        IgnoreUnmodifiedGroupSizeProperties: 'true'
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '2'
+        PauseTime: PT1M
+        WaitOnResourceSignals: 'true'
+  T2MicroPollingNodeAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - 'us-west-2c'
+      VPCZoneIdentifier:
+        - !Ref TradingSubnet
+      LaunchConfigurationName:
+        Ref: T2MicroPollingNodeLaunchConfig
+      DesiredCapacity: !Ref NumT2MicroPollingNodes
+      MinSize: !Ref NumT2MicroPollingNodes
+      MaxSize: !Ref NumT2MicroPollingNodes
+      Tags:
+      - Key: polling-node
+        Value: ""
+        PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref NumT2MicroPollingNodes
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingScheduledAction:
+        IgnoreUnmodifiedGroupSizeProperties: 'true'
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '2'
+        PauseTime: PT1M
+        WaitOnResourceSignals: 'true'
+  T2SmallPollingNodeAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - 'us-west-2c'
+      VPCZoneIdentifier:
+        - !Ref TradingSubnet
+      LaunchConfigurationName:
+        Ref: T2SmallPollingNodeLaunchConfig
+      DesiredCapacity: !Ref NumT2SmallPollingNodes
+      MinSize: !Ref NumT2SmallPollingNodes
+      MaxSize: !Ref NumT2SmallPollingNodes
+      Tags:
+      - Key: polling-node
+        Value: ""
+        PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref NumT2SmallPollingNodes
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingScheduledAction:
+        IgnoreUnmodifiedGroupSizeProperties: 'true'
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '2'
+        PauseTime: PT1M
+        WaitOnResourceSignals: 'true'
+  #
+  # T2NanoPollingNode:
+  #   Type: 'AWS::EC2::Instance'
+  #   Properties:
+  #     IamInstanceProfile: !Ref EC2InstanceProfile
+  #     ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+  #     InstanceType: 't2.micro'
+  #     SecurityGroupIds:
+  #     - !Ref SecurityGroup
+  #     UserData:
+  #       'Fn::Base64': !Sub |SubnetId: !Ref Subnet
+  #     Tags:
+  #     - Key: DeploymentGroup
+  #       Value: !Ref AWS::StackName
+  #     - Key: Name
+  #       Value: !Ref AWS::StackName
+  #     - Key: polling-node
+  #       Value: ""
+  #   CreationPolicy:
+  #     ResourceSignal:
+  #       Count: 1
+  #       Timeout: PT10M
+  # T2MicroPollingNode:
+  #   Type: 'AWS::EC2::Instance'
+  #   Properties:
+  #     IamInstanceProfile: !Ref EC2InstanceProfile
+  #     ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+  #     InstanceType: 't2.micro'
+  #     SecurityGroupIds:
+  #     - !Ref SecurityGroup
+  #     UserData:
+  #       'Fn::Base64': !Sub |
+  #         #!/bin/bash -x
+  #         echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKGKbJ6HuDz5iiY24qi1vCx8lMI9/xmeJrR9kqLCINip james@cantor" >> /home/ec2-user/authorized_keys
+  #         echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEA2a+C/zBVNiqaH6+BZ7K0bxsXdnLg6SDqZoXYRsr3aol6M2sHeug3Eqti0VC7U84VblcYIhKxe6neRP11SmD0X2uTUGAqzjSgnRc6YHy+iao8Va1iWWq58/RkROwjUAseOkaIj0M7J1Otu49WqAuvZ3fmiSu44TshbxBADcFo7eGjDiqe4WNYpDeuyAD9Ls2ZD23KeS1n5NNIR3t1B6Zof/IACi2waYPYDEuTOQHXRLnEbT5SDMKpQpRHdWbXa0dFBJZ0BjI07jeNNH95JmEmV8WB10RLa4yxVaYXPe8iqXYwakIokru/l1ixDtidWHXkc75SqKksoX4nMg9GlbAhDQ mike@home" >> /home/ec2-user/authorized_keys
+  #         yum update -y && yum install -y ruby wget && wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install && chmod +x ./install && ./install auto && service codedeploy-agent start
+  #         service codedeploy-agent enable
+  #         yum -y erase ntp*
+  #         yum -y install chrony
+  #         service chronyd enable
+  #         service chronyd start
+  #         yum install -y java-1.8.0-openjdk
+  #         yum install -y python36 python36-pip
+  #         yum install -y tcpdump wireshark ec2-net-utils
+  #         yum -y erase ntp* && sleep 8s && yum -y install chrony &&  sleep 8s && $(service chrony start || service chronyd start)
+  #         yum-config-manager --enable epel
+  #         yum install -y iftop htop
+  #         pip-3.6 install boto3
+  #         /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource T2MicroPollingNode
+  #     SubnetId: !Ref Subnet
+  #     Tags:
+  #     - Key: DeploymentGroup
+  #       Value: !Ref AWS::StackName
+  #     - Key: Name
+  #       Value: !Ref AWS::StackName
+  #     - Key: polling-node
+  #       Value: ""
+  #   CreationPolicy:
+  #     ResourceSignal:
+  #       Count: !Ref NumT2NanoPollingNodes
+  #       Timeout: PT10M
+  #
+  # T2SmallPollingNode:
+  #   Type: 'AWS::EC2::Instance'
+  #   Properties:
+  #     IamInstanceProfile: !Ref EC2InstanceProfile
+  #     ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+  #     InstanceType: 't2.small'
+  #     SecurityGroupIds:
+  #     - !Ref SecurityGroup
+  #     UserData:
+  #       'Fn::Base64': !Sub |
+  #         #!/bin/bash -x
+  #         echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKGKbJ6HuDz5iiY24qi1vCx8lMI9/xmeJrR9kqLCINip james@cantor" >> /home/ec2-user/authorized_keys
+  #         echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEA2a+C/zBVNiqaH6+BZ7K0bxsXdnLg6SDqZoXYRsr3aol6M2sHeug3Eqti0VC7U84VblcYIhKxe6neRP11SmD0X2uTUGAqzjSgnRc6YHy+iao8Va1iWWq58/RkROwjUAseOkaIj0M7J1Otu49WqAuvZ3fmiSu44TshbxBADcFo7eGjDiqe4WNYpDeuyAD9Ls2ZD23KeS1n5NNIR3t1B6Zof/IACi2waYPYDEuTOQHXRLnEbT5SDMKpQpRHdWbXa0dFBJZ0BjI07jeNNH95JmEmV8WB10RLa4yxVaYXPe8iqXYwakIokru/l1ixDtidWHXkc75SqKksoX4nMg9GlbAhDQ mike@home" >> /home/ec2-user/authorized_keys
+  #         yum update -y && yum install -y ruby wget && wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install && chmod +x ./install && ./install auto && service codedeploy-agent start
+  #         service codedeploy-agent enable
+  #         yum -y erase ntp*
+  #         yum -y install chrony
+  #         service chronyd enable
+  #         service chronyd start
+  #         yum install -y java-1.8.0-openjdk
+  #         yum install -y python36 python36-pip
+  #         yum install -y tcpdump wireshark ec2-net-utils
+  #         yum -y erase ntp* && sleep 8s && yum -y install chrony &&  sleep 8s && $(service chrony start || service chronyd start)
+  #         yum-config-manager --enable epel
+  #         yum install -y iftop htop
+  #         pip-3.6 install boto3
+  #         /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource T2MicroPollingNode
+  #     SubnetId: !Ref Subnet
+  #     Tags:
+  #     - Key: DeploymentGroup
+  #       Value: !Ref AWS::StackName
+  #     - Key: Name
+  #       Value: !Ref AWS::StackName
+  #     - Key: polling-node
+  #       Value: ""
+  #   CreationPolicy:
+  #     ResourceSignal:
+  #       Count: !Ref NumT2SmallPollingNodes
+  #       Timeout: PT10M
+  TransactionNode:
+    DependsOn: TradingNatGateway
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      InstanceType: 'c5.xlarge'
+      # NetworkInterfaces:
+      #   - AssociatePublicIpAddress: "true"
+      #     DeviceIndex: "0"
+      #     GroupSet:
+      #       - Ref: "TradingSecurityGroup"
+      #     SubnetId:
+      #       Ref: "TradingSubnet"
+      SecurityGroupIds:
+      - !Ref TradingSecurityGroup
+      UserData:
+        'Fn::Base64': !Sub |
+          #!/bin/bash -xe
+          /opt/aws/bin/cfn-init -v
+          export NOWISH=$(date)
+          touch "test-got-here-c5-$NOWISH" && aws s3 cp -R ./test-got-here-c5-$NOWISH "s3://fbj-some-test-bucket/start/test-got-here-c5/$NOWISH"
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN14jrYs34pNoRW13wTIBCsU0HNvnJuZhyi5SY4DZmmq james@galois" >> /home/ec2-user/authorized_keys
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKGKbJ6HuDz5iiY24qi1vCx8lMI9/xmeJrR9kqLCINip james@cantor" >> /home/ec2-user/authorized_keys
+          echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEA2a+C/zBVNiqaH6+BZ7K0bxsXdnLg6SDqZoXYRsr3aol6M2sHeug3Eqti0VC7U84VblcYIhKxe6neRP11SmD0X2uTUGAqzjSgnRc6YHy+iao8Va1iWWq58/RkROwjUAseOkaIj0M7J1Otu49WqAuvZ3fmiSu44TshbxBADcFo7eGjDiqe4WNYpDeuyAD9Ls2ZD23KeS1n5NNIR3t1B6Zof/IACi2waYPYDEuTOQHXRLnEbT5SDMKpQpRHdWbXa0dFBJZ0BjI07jeNNH95JmEmV8WB10RLa4yxVaYXPe8iqXYwakIokru/l1ixDtidWHXkc75SqKksoX4nMg9GlbAhDQ mike@home" >> /home/ec2-user/authorized_keys
+          yum update -y && yum install -y ruby wget && wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install && chmod +x ./install && ./install auto
+          service codedeploy-agent start
+          chkconfig --add codedeploy-agent
+          chkconfig codedeploy-agent on
+          yum install -y java-1.8.0-openjdk
+          yum install -y python36 python36-pip
+          yum-config-manager --enable epel
+          yum install -y tcpdump wireshark ec2-net-utils
+          yum -y erase ntp* && sleep 8s && yum -y install chrony &&  sleep 8s && service chronyd start
+          chkconfig --add chronyd
+          chkconfig chronyd on
+          yum install -y iftop htop
+          pip-3.6 install boto3
+          export NOWISH=$(date)
+          touch "test-got-here-c5-$NOWISH" && aws s3 cp -R ./test-got-here-c5-$NOWISH "s3://fbj-some-test-bucket/test-got-here-c5/$NOWISH"
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region}  --success --stack ${AWS::StackName} --resource TransactionNode
+      SubnetId: !Ref TradingSubnet
+      Tags:
+      - Key: DeploymentGroup
+        Value: !Ref AWS::StackName
+      - Key: Name
+        Value: !Ref AWS::StackName
+      - Key: transaction-node
+        Value: ""
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+  # LambdaIAMRole:
+  #   Type: 'AWS::IAM::Role'
+  #   Properties:
+  #     AssumeRolePolicyDocument:
+  #       Version: '2012-10-17'
+  #       Statement:
+  #       - Effect: Allow
+  #         Principal:
+  #           Service:
+  #           - 'lambda.amazonaws.com'
+  #         Action:
+  #         - 'sts:AssumeRole'
+  #     Path: '/'
+  #     ManagedPolicyArns:
+  #     - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  #     Policies:
+  #     - PolicyName: codepipeline
+  #       PolicyDocument:
+  #         Version: '2012-10-17'
+  #         Statement:
+  #         - Action:
+  #           - codepipeline:PutJobFailureResult
+  #           - codepipeline:PutJobSuccessResult
+  #           Resource: "*"
+  #           Effect: Allow
+  # TestLambda:
+  #   Type: "AWS::Lambda::Function"
+  #   Properties:
+  #     Code:
+  #       S3Bucket: 'codepipeline-codedeploy-example-lambda'
+  #       S3Key: 'v2.zip'
+  #     FunctionName: 'codepipeline_http_test'
+  #     Handler: 'index.handler'
+  #     MemorySize: 128
+  #     Role: !Sub '${LambdaIAMRole.Arn}'
+  #     Runtime: 'nodejs4.3'
+  #     Timeout: 30
+Outputs:
+  URL:
+    Description: 'transaction node dns name'
+    Value: !Sub 'http://${TransactionNode.PublicDnsName}'
