@@ -8,7 +8,7 @@ echo `pgrep -f java8`
 pid=`pgrep -f java8`
 echo `pkill -f java8`
 
-maxwait=5
+maxwait=300
 i=0
 while kill -0 $pid; do
     if [ $i -gt ${maxwait} ]; then
