@@ -5,12 +5,3 @@ os: linux
 files:
     - source: /
       destination: /tmp
-hooks:
-  ApplicationStart:
-    - location: scripts/start_server.py
-      timeout: 100
-      runas: root
-  ApplicationStop:
-    - location: scripts/stop_server.sh
-      timeout: 400
-      runas: root
