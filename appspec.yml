@@ -6,10 +6,6 @@ files:
     - source: /
       destination: /tmp
 hooks:
-  BeforeInstall:
-    - location: scripts/install_dependencies.sh
-      timeout: 300
-      runas: root
   ApplicationStart:
     - location: scripts/start_server.py
       timeout: 100
